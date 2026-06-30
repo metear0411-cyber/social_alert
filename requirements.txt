@@ -1,0 +1,4 @@
+requests>=2.31
+# 아래 둘은 네이버웍스(Bot) 연동 시에만 실제로 사용됩니다.
+PyJWT>=2.8
+cryptography>=42.0
