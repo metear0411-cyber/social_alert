@@ -43,6 +43,7 @@ jobs:
         run: python welfare_alert.py
 
       - name: 확인 기록 저장 (state.json 변경 시에만 커밋)
+        if: always()   # 발송 일부 실패로 앞 step이 비정상 종료해도, 성공분 기록은 커밋
         run: |
           if [[ -n "$(git status --porcelain state.json)" ]]; then
             git config user.name "github-actions[bot]"

@@ -16,6 +16,7 @@
 import os
 import json
 import sys
+import time
 import datetime
 import urllib.parse
 
@@ -140,15 +141,65 @@ def build_message(item, matched_kw):
     )
 
 
+NW_KEYS = ["NW_BOT_ID", "NW_CHANNEL_ID", "NW_CLIENT_ID",
+           "NW_CLIENT_SECRET", "NW_SERVICE_ACCOUNT", "NW_PRIVATE_KEY"]
+
+
+def channel_configured():
+    """발송 채널(네이버웍스 또는 Webhook)이 하나라도 설정돼 있는지."""
+    return all(os.getenv(k) for k in NW_KEYS) or bool(os.getenv("WEBHOOK_URL"))
+
+
+def post_with_retry(desc, do_request, attempts=3):
+    """일시적 오류(네트워크/타임아웃/5xx/429)에 한해 지수 백오프로 재시도.
+    4xx 같은 영구 오류는 즉시 올림. 성공 시 응답 객체 반환."""
+    for i in range(attempts):
+        try:
+            r = do_request()
+            r.raise_for_status()
+            return r
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response is not None else None
+            if status not in (429, 500, 502, 503, 504) or i == attempts - 1:
+                raise
+        except (requests.ConnectionError, requests.Timeout):
+            if i == attempts - 1:
+                raise
+        wait = 2 ** i  # 1, 2, 4초
+        print(f"[재시도] {desc} 일시 실패 → {wait}초 후 재시도 ({i + 1}/{attempts})",
+              file=sys.stderr)
+        time.sleep(wait)
+
+
+def webhook_payload(url, message):
+    """Webhook URL의 호스트를 보고 채널에 맞는 페이로드를 만든다.
+    - 디스코드: content(문자열)   - 슬랙/팀즈: text   - 텔레그램: chat_id+text
+    - 알 수 없는 채널: text·content 둘 다 문자열로 담아 호환성 최대화."""
+    host = (urllib.parse.urlparse(url).netloc or "").lower()
+    if "discord" in host:
+        return {"content": message}
+    if "slack" in host:
+        return {"text": message}
+    if "office.com" in host or "office365" in host:   # Teams(O365 커넥터)
+        return {"text": message}
+    if "telegram" in host:
+        payload = {"text": message}
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if chat_id:                                    # 텔레그램은 chat_id 필수
+            payload["chat_id"] = chat_id
+        return payload
+    # 그 외(미지의 서비스): 가장 흔한 두 키를 문자열로 동시 제공
+    return {"text": message, "content": message}
+
+
 def notify(message):
-    """우선순위: 네이버웍스 Bot → 범용 Webhook → 화면 출력."""
+    """우선순위: 네이버웍스 Bot → 범용 Webhook → 화면 출력.
+    반환: (channel, delivered) — delivered=True 면 실제 발송에 성공한 것."""
     # (A) 네이버웍스 Bot API (자격증명이 모두 있을 때만)
-    nw_keys = ["NW_BOT_ID", "NW_CHANNEL_ID", "NW_CLIENT_ID",
-               "NW_CLIENT_SECRET", "NW_SERVICE_ACCOUNT", "NW_PRIVATE_KEY"]
-    if all(os.getenv(k) for k in nw_keys):
+    if all(os.getenv(k) for k in NW_KEYS):
         try:
             send_naver_works(message)
-            return "naver_works"
+            return ("naver_works", True)
         except Exception as e:
             print(f"[경고] 네이버웍스 발송 실패 → Webhook/출력으로 대체: {e}", file=sys.stderr)
 
@@ -156,22 +207,21 @@ def notify(message):
     hook = os.getenv("WEBHOOK_URL")
     if hook:
         try:
-            payload = {"text": message, "content": {"type": "text", "text": message}}
-            r = requests.post(hook, json=payload, timeout=15)
-            r.raise_for_status()
-            return "webhook"
+            payload = webhook_payload(hook, message)
+            post_with_retry("Webhook 발송", lambda: requests.post(hook, json=payload, timeout=15))
+            return ("webhook", True)
         except Exception as e:
-            print(f"[경고] Webhook 발송 실패 → 화면 출력으로 대체: {e}", file=sys.stderr)
+            print(f"[경고] Webhook 발송 실패: {e}", file=sys.stderr)
 
-    # (C) 어떤 채널도 없을 때: 로그로 출력 (로컬 점검용)
-    print("----- (발송 채널 미설정 / 미리보기) -----")
+    # (C) 채널 미설정이거나 모든 발송이 실패: 로그로 출력 (로컬 점검용)
+    print("----- (발송 채널 미설정 또는 발송 실패 / 미리보기) -----")
     print(message)
-    return "stdout"
+    return ("stdout", False)
 
 
 def send_naver_works(message):
     """네이버웍스 Bot 메시지 발송 (JWT로 access token 발급 후 전송)."""
-    import time, jwt  # PyJWT 필요 (네이버웍스 사용할 때만)
+    import jwt  # PyJWT 필요 (네이버웍스 사용할 때만)
 
     client_id = os.environ["NW_CLIENT_ID"]
     client_secret = os.environ["NW_CLIENT_SECRET"]
@@ -185,27 +235,31 @@ def send_naver_works(message):
         {"iss": client_id, "sub": service_account, "iat": now, "exp": now + 3600},
         private_key, algorithm="RS256",
     )
-    token_res = requests.post(
-        "https://auth.worksmobile.com/oauth2/v2.0/token",
-        data={
-            "assertion": assertion,
-            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "scope": "bot",
-        }, timeout=15,
+    token_res = post_with_retry(
+        "네이버웍스 토큰 발급",
+        lambda: requests.post(
+            "https://auth.worksmobile.com/oauth2/v2.0/token",
+            data={
+                "assertion": assertion,
+                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "scope": "bot",
+            }, timeout=15,
+        ),
     )
-    token_res.raise_for_status()
     access_token = token_res.json()["access_token"]
 
     msg_url = f"https://www.worksapis.com/v1.0/bots/{bot_id}/channels/{channel_id}/messages"
-    r = requests.post(
-        msg_url,
-        headers={"Authorization": f"Bearer {access_token}",
-                 "Content-Type": "application/json"},
-        json={"content": {"type": "text", "text": message}}, timeout=15,
+    post_with_retry(
+        "네이버웍스 메시지 발송",
+        lambda: requests.post(
+            msg_url,
+            headers={"Authorization": f"Bearer {access_token}",
+                     "Content-Type": "application/json"},
+            json={"content": {"type": "text", "text": message}}, timeout=15,
+        ),
     )
-    r.raise_for_status()
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -251,13 +305,29 @@ def main():
         return
 
     hits.sort(key=lambda x: x[0]["date"])
-    channel = "stdout"
+    configured = channel_configured()
+    delivered, failed, channel = 0, 0, "stdout"
     for item, kw in hits:
-        channel = notify(build_message(item, kw))
-        notified.add(item["uid"])
+        channel, ok = notify(build_message(item, kw))
+        if ok:
+            # 실제 발송 성공 → 기록(중복 방지)
+            notified.add(item["uid"])
+            delivered += 1
+        elif not configured:
+            # 채널 미설정(로컬 미리보기) → 재시도 의미 없으니 기록만
+            notified.add(item["uid"])
+        else:
+            # 채널은 있는데 발송 실패 → 기록하지 않음(다음 실행에서 자동 재시도)
+            failed += 1
 
     save_state(notified)
-    print(f"신규 {len(hits)}건 발송 완료 (채널: {channel}).")
+    if failed:
+        print(f"신규 {len(hits)}건 중 {delivered}건 발송, {failed}건 실패 — "
+              f"실패분은 다음 실행 때 자동 재시도됩니다. (채널: {channel})", file=sys.stderr)
+        # 발송 실패가 GitHub Actions 로그에 빨간 X로 보이도록 종료 코드 1
+        # (성공분 state.json 은 위에서 이미 저장됨 → 워크플로의 커밋 step은 always() 로 실행)
+        sys.exit(1)
+    print(f"신규 {delivered}건 발송 완료 (채널: {channel}).")
 
 
 if __name__ == "__main__":
