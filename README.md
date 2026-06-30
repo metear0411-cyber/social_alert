@@ -66,7 +66,41 @@ GitHub에서 새 저장소(repository)를 하나 만들고, 위 3개 파일을 �
 - **키워드 추가/삭제**: 현재 `기능보강, 환경개선, 공모사업, 지원사업, 물품지원, 개보수, 리모델링, 기자재, 가전, 후원물품`
 - **실행 시간 변경**: 현재 평일 9시·14시
 - **감시 게시판 추가**: 예) 복지넷(bokji.net) 사업공모, 사랑의열매 대구공동모금회 등
-  → 소스를 끼워넣는 구조라 추가가 간단합니다.
+  → 소스를 끼워넣는 구조라 추가가 간단합니다. (아래 "감시 게시판 늘리기" 참고)
+
+---
+
+## 감시 게시판 늘리기 (welfare.net 계열)
+
+같은 welfare.net 계열 게시판은 **코드를 건드리지 않고** `sources.json` 파일만 추가하면 됩니다.
+저장소 최상단에 `sources.json` 파일을 만들고(없으면 GitHub 웹에서 'Add file'), 아래처럼 적습니다.
+
+```json
+[
+  {
+    "name": "대구사회복지사협회 공지사항",
+    "type": "welfare_net",
+    "api_base": "https://api.welfare.net/daegu",
+    "page_base": "https://www.welfare.net/daegu/community/notice",
+    "mi": 5100,
+    "bbsId": 5108
+  }
+]
+```
+
+- `mi`·`bbsId` 값은 게시판마다 다릅니다. 해당 게시판을 브라우저에서 열어 주소·네트워크 요청을 보면 확인됩니다.
+- 잠깐 꺼두고 싶은 항목은 `"enabled": false` 를 넣으면 건너뜁니다.
+
+**새 게시판이 제대로 잡히는지 미리 확인(점검 모드):**
+Actions 탭에서 수동 실행하기 전, 네트워크가 되는 곳에서 아래를 돌리면 발송 없이 수집 결과만 보여줍니다.
+
+```bash
+python welfare_alert.py --probe          # 모든 소스 점검
+python welfare_alert.py --probe 5108     # 특정 게시판만(이름/bbsId로)
+```
+
+> 복지넷(bokji.net)·사랑의열매처럼 welfare.net 계열이 **아닌** 사이트는 응답 형식이 달라
+> 전용 처리기(handler)가 따로 필요합니다. 한 번의 응답 샘플만 주시면 정확히 붙여드립니다.
 
 ---
 

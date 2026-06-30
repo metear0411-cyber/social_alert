@@ -94,6 +94,27 @@ def fetch_welfare_net(src):
 
 HANDLERS = {"welfare_net": fetch_welfare_net}
 
+SOURCES_FILE = "sources.json"   # (선택) 코드 수정 없이 게시판을 추가하는 데이터 파일
+
+
+def load_sources():
+    """코드에 박힌 SOURCES + (있으면) sources.json 을 합쳐서 반환.
+    sources.json 으로 게시판을 늘리면 파이썬 코드를 건드리지 않아도 됩니다
+    (GitHub 웹 편집기로 추가 가능). "enabled": false 인 항목은 건너뜁니다."""
+    srcs = [s for s in SOURCES if s.get("enabled", True)]
+    if os.path.exists(SOURCES_FILE):
+        try:
+            with open(SOURCES_FILE, "r", encoding="utf-8") as f:
+                extra = json.load(f)
+            if isinstance(extra, list):
+                srcs.extend(s for s in extra if s.get("enabled", True))
+            else:
+                print(f"[경고] {SOURCES_FILE} 은 JSON 배열([...]) 형식이어야 합니다.",
+                      file=sys.stderr)
+        except Exception as e:
+            print(f"[경고] {SOURCES_FILE} 읽기 실패 — 무시하고 진행: {e}", file=sys.stderr)
+    return srcs
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # 키워드 필터
@@ -272,7 +293,7 @@ def main():
 
     # 1) 전 소스 수집
     collected = []
-    for src in SOURCES:
+    for src in load_sources():
         handler = HANDLERS.get(src["type"])
         if not handler:
             print(f"[경고] 알 수 없는 소스 타입: {src['type']}", file=sys.stderr)
@@ -330,5 +351,46 @@ def main():
     print(f"신규 {delivered}건 발송 완료 (채널: {channel}).")
 
 
+def probe(filter_str=None):
+    """새 소스를 추가할 때 점검용 — 발송도 state 기록도 하지 않고,
+    각 소스가 무엇을 수집하는지·어떤 글이 키워드에 걸리는지 화면에 보여준다.
+    네트워크가 되는 곳(예: GitHub Actions의 Run workflow)에서 한 번 돌리면
+    새 게시판의 mi/bbsId·필드 매핑이 맞는지 즉시 확인할 수 있다.
+
+    사용: python welfare_alert.py --probe          (모든 소스)
+          python welfare_alert.py --probe 5208     (이름/ bbsId에 매칭되는 소스만)"""
+    srcs = load_sources()
+    if not srcs:
+        print("등록된 소스가 없습니다.")
+        return
+    for src in srcs:
+        if filter_str and filter_str not in src.get("name", "") \
+                and filter_str != str(src.get("bbsId", "")):
+            continue
+        print(f"\n### {src.get('name', '(이름없음)')}  [type={src.get('type')}]")
+        handler = HANDLERS.get(src.get("type"))
+        if not handler:
+            print(f"   [경고] 알 수 없는 타입: {src.get('type')}")
+            continue
+        try:
+            items = handler(src)
+        except Exception as e:
+            print(f"   [수집 실패] {e}")
+            continue
+        matched = sum(1 for it in items if matches_keyword(it["title"]))
+        print(f"   수집 {len(items)}건 · 키워드 매칭 {matched}건  (✓=매칭, [공지]=상단고정)")
+        for it in items[:15]:
+            kw = matches_keyword(it["title"])
+            mark = f"✓{kw}" if kw else "·"
+            notice = "[공지]" if it.get("is_notice") else ""
+            print(f"   {mark:10} {it.get('date',''):12} {notice}{it.get('title','')}")
+            print(f"              {it.get('url','')}")
+
+
 if __name__ == "__main__":
-    main()
+    if "--probe" in sys.argv:
+        i = sys.argv.index("--probe")
+        flt = sys.argv[i + 1] if len(sys.argv) > i + 1 else None
+        probe(flt)
+    else:
+        main()

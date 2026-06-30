@@ -145,3 +145,16 @@ python welfare_alert.py          # 신규 없으면 "신규 공고 없음."
   step은 `if: always()` 라 성공분 기록은 항상 커밋됨(중복 방지 유지).
 - ⚠️ 라이브 검증은 작업 환경의 외부망 차단으로 미실시 — 오프라인 단위/통합 테스트로만 확인.
   실제 채널 발송은 사용자 환경(GitHub Actions)에서 확인 필요.
+
+### 3단계 — 소스 확장 인프라 (완료, 오프라인 검증)
+새 게시판을 안전하게 늘릴 수 있는 토대를 마련함.
+- **`load_sources()`**: 코드의 `SOURCES` + (있으면) 저장소 루트의 `sources.json` 을 병합.
+  welfare.net 계열 게시판은 파이썬을 안 건드리고 JSON 데이터로 추가 가능(GitHub 웹 편집).
+  항목에 `"enabled": false` 면 건너뜀. `main()` 은 이제 `load_sources()` 를 사용.
+- **`--probe` 모드**: `python welfare_alert.py --probe [필터]` — 발송·state 없이 각 소스의
+  수집 결과와 키워드 매칭을 출력. 새 소스의 mi/bbsId·필드 매핑을 네트워크 되는 곳에서 즉시 검증.
+- ⚠️ **작업 환경 외부망 차단 확정**: 조직 egress 정책이 `api.welfare.net`·`bokji.net`·
+  `chest.or.kr`(사랑의열매)·`developers.worksmobile.com` 등을 모두 403 차단(프록시 로그 확인).
+  → 이 환경에선 신규 사이트 구조 조사·라이브 수집·네이버웍스 브라우저 작업이 불가.
+  복지넷/사랑의열매 등 welfare.net **비계열** 사이트는 응답 샘플 1건 확보 후 전용 핸들러 작성 필요.
+- 크롬 MCP는 이 세션에 미연결. 네이버웍스 콘솔 작업은 사용자 환경 또는 별도 브라우저 도구 필요.
